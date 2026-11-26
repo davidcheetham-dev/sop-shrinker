@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOP Image Shrinker</title>
+<style>
+  :root { --ink:#1b1f24; --mute:#5c6670; --line:#d5dae0; --bg:#f6f7f9; --accent:#0b5fd6; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; color: var(--ink); background: var(--bg); margin: 0; padding: 24px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--mute); margin: 0 0 20px; }
+  #drop { border: 2px dashed var(--line); background: #fff; border-radius: 12px; padding: 40px 16px; text-align: center; cursor: pointer; }
+  #drop.over { border-color: var(--accent); background: #eef4ff; }
+  #drop strong { display: block; font-size: 18px; margin-bottom: 4px; }
+  .opts { display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0; align-items: end; }
+  label { font-size: 13px; color: var(--mute); display: block; margin-bottom: 4px; }
+  input[type=number] { width: 110px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 15px; }
+  button { padding: 10px 16px; border-radius: 8px; border: 1px solid var(--line); background: #fff; font-size: 15px; cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #summary { margin: 12px 0; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { background: #eef0f3; font-weight: 600; }
+  td.err { color: #b42318; }
+  a.dl { color: var(--accent); text-decoration: none; }
+  .note { color: var(--mute); font-size: 13px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SOP Image Shrinker</h1>
+  <p class="sub">Drop photos in. Get small JPEGs for Word. Nothing leaves your device.</p>
+
+  <div id="drop" tabindex="0">
+    <strong>Drop photos here</strong>
+    or click to choose. No limit on how many.
+    <input id="file" type="file" accept="image/*" multiple hidden>
+  </div>
+
+  <div class="opts">
+    <div><label for="edge">Long edge (px)</label><input id="edge" type="number" value="1200" min="300" max="4000" step="100"></div>
+    <div><label for="q">Quality (1 to 100)</label><input id="q" type="number" value="82" min="40" max="100"></div>
+    <button id="zip" class="primary" disabled>Download all as ZIP</button>
+    <button id="clear" disabled>Clear</button>
+  </div>
+
+  <div id="summary"></div>
+  <table id="tbl" hidden>
+    <thead><tr><th>File</th><th>Before</th><th>After</th><th>Size</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <p class="note">Defaults: 1200 px long edge, quality 82. Photos never get enlarged. Rotation is fixed, EXIF data is removed. HEIC files only work in Safari; on other browsers send photos as JPEG (iPhone: Settings > Camera > Formats > Most Compatible).</p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const results = []; // {name, blob, url}
+let busy = false;
+
+const kb = n => (n / 1024).toFixed(0) + ' KB';
+
+function uniqueName(base) {
+  let name = base + '.jpg', i = 2;
+  const taken = new Set(results.map(r => r.name));
+  while (taken.has(name)) name = base + '_' + (i++) + '.jpg';
+  return name;
+}
+
+async function shrink(file, edge, quality) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const scale = Math.min(1, edge / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, 0, 0, w, h);
+  bmp.close && bmp.close();
+  const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', quality / 100));
+  c.width = c.height = 0;
+  return { blob, w, h };
+}
+
+async function handle(files) {
+  if (busy) return;
+  busy = true;
+  const edge = Math.max(300, +$('edge').value || 1200);
+  const quality = Math.min(100, Math.max(40, +$('q').value || 82));
+  $('tbl').hidden = false;
+  let n = 0;
+  for (const f of files) {
+    n++;
+    $('summary').textContent = 'Working: ' + n + ' of ' + files.length + '...';
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td></td><td></td><td></td><td></td><td></td>';
+    tr.children[0].textContent = f.name;
+    tr.children[1].textContent = kb(f.size);
+    $('rows').appendChild(tr);
+    try {
+      const { blob, w, h } = await shrink(f, edge, quality);
+      const base = f.name.replace(/\.[^.]+$/, '');
+      const name = uniqueName(base);
+      const url = URL.createObjectURL(blob);
+      results.push({ name, blob, url });
+      tr.children[2].textContent = kb(blob.size);
+      tr.children[3].textContent = w + 'x' + h;
+      tr.children[4].innerHTML = '<a class="dl" download="' + name.replace(/"/g, '') + '" href="' + url + '">Save</a>';
+    } catch (e) {
+      tr.children[2].textContent = 'Skipped';
+      tr.children[2].className = 'err';
+      tr.children[3].textContent = 'Unsupported or unreadable';
+    }
+  }
+  busy = false;
+  const total = results.reduce((s, r) => s + r.blob.size, 0);
+  $('summary').textContent = results.length + ' image(s) ready, ' + (total / 1048576).toFixed(1) + ' MB total.';
+  $('zip').disabled = $('clear').disabled = results.length === 0;
+}
+
+// ---- minimal ZIP writer (store, no compression; JPEGs are already compressed)
+const crcTable = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = crcTable[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+
+async function buildZip(items) {
+  const enc = new TextEncoder();
+  const d = new Date();
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const parts = [], central = [];
+  let offset = 0;
+  for (const it of items) {
+    const data = new Uint8Array(await it.blob.arrayBuffer());
+    const name = enc.encode(it.name);
+    const crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true);
+    lh.setUint16(8, 0, true); lh.setUint16(10, time, true); lh.setUint16(12, date, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true);
+    lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+    parts.push(lh.buffer, name, data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint16(10, 0, true); ch.setUint16(12, time, true); ch.setUint16(14, date, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true);
+    ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+    central.push(ch.buffer, name);
+    offset += 30 + name.length + data.length;
+  }
+  let csize = 0;
+  for (let i = 0; i < central.length; i++) csize += central[i].byteLength;
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, items.length, true); end.setUint16(10, items.length, true);
+  end.setUint32(12, csize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+}
+
+$('zip').onclick = async () => {
+  $('zip').disabled = true;
+  const blob = await buildZip(results);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'sop_images.zip';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  $('zip').disabled = false;
+};
+
+$('clear').onclick = () => {
+  results.forEach(r => URL.revokeObjectURL(r.url));
+  results.length = 0;
+  $('rows').innerHTML = '';
+  $('tbl').hidden = true;
+  $('summary').textContent = '';
+  $('zip').disabled = $('clear').disabled = true;
+};
+
+const drop = $('drop'), file = $('file');
+drop.onclick = () => file.click();
+drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') file.click(); };
+file.onchange = () => { handle([...file.files]); file.value = ''; };
+['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => handle([...e.dataTransfer.files].filter(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name))));
+</script>
+</body>
+</html>
